@@ -18,6 +18,7 @@ private final class FakeWindows: @unchecked Sendable {
         set { lock.withLock { _dead = newValue } }
     }
     private var _dead: Set<Int32> = []
+    var didWrite: ((WindowID) -> Void)?
 
     init(_ frames: [WindowID: CGRect] = [:], minWidths: [WindowID: CGFloat] = [:]) {
         self.frames = frames
@@ -40,6 +41,7 @@ private final class FakeWindows: @unchecked Sendable {
                     frame.size.width = max(frame.width, self.minWidths[job.id] ?? 0)
                     self.frames[job.id] = frame
                 }
+                self.didWrite?(job.id)
             })
     }
 }
@@ -61,6 +63,15 @@ private func submitAndWait(_ scheduler: FrameScheduler, _ jobs: [FrameJob],
     #expect(done.wait(timeout: .now() + 2) == .success,
             sourceLocation: SourceLocation(fileID: fileID, filePath: filePath, line: line, column: column))
     return results.sorted { $0.job.id < $1.job.id }
+}
+
+/// Wait for an animation step to actually reach the app before testing the final readback.
+/// A final request now intentionally discards queued steps, so submission order alone is insufficient.
+private func stepAndWait(_ scheduler: FrameScheduler, _ job: FrameJob, in fake: FakeWindows) {
+    let done = DispatchSemaphore(value: 0)
+    fake.didWrite = { id in if id == job.id { done.signal() } }
+    scheduler.step([job])
+    #expect(done.wait(timeout: .now() + 2) == .success)
 }
 
 struct FrameSchedulerTests {
@@ -431,7 +442,7 @@ struct FrameSchedulerStepTests {
         let scheduler = lagging.scheduler()
         var step = job(1, 10, 0)
         step.frame.size.width = 300
-        scheduler.step([step])
+        stepAndWait(scheduler, step, in: lagging)
         let results = submitAndWait(scheduler, [job(1, 10, 0)])
         #expect(results[0].retried)
         #expect(scheduler.minimumSizes[10] == nil)
@@ -441,7 +452,7 @@ struct FrameSchedulerStepTests {
         let other = refusing.scheduler()
         var small = job(1, 20, 0)
         small.frame.size.width = 300
-        other.step([small])
+        stepAndWait(other, small, in: refusing)
         _ = submitAndWait(other, [job(1, 20, 0)])
         _ = submitAndWait(other, [job(1, 20, 0, width: 200)])
         #expect(other.minimumSizes[20]?.width == 250)
@@ -453,7 +464,7 @@ struct FrameSchedulerStepTests {
         let scheduler = fake.scheduler()
         var step = job(1, 10, 0)
         step.frame.size.width = 300
-        scheduler.step([step])
+        stepAndWait(scheduler, step, in: fake)
         #expect(submitAndWait(scheduler, [step]).map(\.written) == [false])
 
         // Then it refuses 100 and 200 at 300: that is a minimum, as for a window never stepped.

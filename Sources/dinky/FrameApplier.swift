@@ -34,16 +34,33 @@ final class FrameApplier {
         try? FileManager.default.removeItem(at: Self.supportURL.appendingPathComponent("minimum-sizes.json"))
         appMinimums = Self.loadMinimums()
         scheduler = FrameScheduler(
-            prepare: { pid in
-                // Enhanced UI (set by VoiceOver and some utilities) makes apps animate and fight frame writes.
-                let app = AXUIElementCreateApplication(pid)
-                AXUIElementSetMessagingTimeout(app, Self.timeout)
-                AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanFalse)
-            },
+            beforeBatch: { pid in Self.suppressEnhancedUI(pid) },
             read: { [unowned self] job in withElement(pid: job.pid, id: job.id, frame) ?? nil },
-            write: { [unowned self] job in withElement(pid: job.pid, id: job.id) { write(job.frame, to: $0) } },
+            write: { [unowned self] job in withElement(pid: job.pid, id: job.id) { write(job, to: $0) } },
             move: { [unowned self] job in withElement(pid: job.pid, id: job.id) { move(job.frame.origin, to: $0) } }
         )
+    }
+
+    /// Other utilities can re-enable Enhanced UI after launch. Read it at the write boundary, not once per
+    /// process. Do not suppress the mode when built-in assistive technology depends on it.
+    private static func suppressEnhancedUI(_ pid: pid_t) {
+        guard !NSWorkspace.shared.isVoiceOverEnabled, !NSWorkspace.shared.isSwitchControlEnabled else { return }
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, Self.timeout)
+        var value: CFTypeRef?
+        let readError = AXUIElementCopyAttributeValue(app, "AXEnhancedUserInterface" as CFString, &value)
+        guard readError == .success, (value as? NSNumber)?.boolValue == true else { return }
+        let error = AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanFalse)
+        // Some apps return notImplemented even though the value changes. Log both rather than assuming success.
+        print("\(stamp()) frames: batch pid \(pid) EnhancedUI before=1 disable-error=\(error.rawValue) after=\(Self.enhancedUI(app))")
+    }
+
+    /// Read only: observe the suspected app-side animation mode without changing it during diagnostics.
+    private static func enhancedUI(_ app: AXUIElement) -> String {
+        AXUIElementSetMessagingTimeout(app, Self.timeout)
+        var value: CFTypeRef?
+        let error = AXUIElementCopyAttributeValue(app, "AXEnhancedUserInterface" as CFString, &value)
+        return "\(String(describing: value)) (error \(error.rawValue))"
     }
 
     /// Sizes windows refused to shrink below, from readback.
@@ -99,6 +116,11 @@ final class FrameApplier {
         scheduler.submit(jobs, progress: progress) { [unowned self] results in
             rememberAppMinimums(results)
             logUnreadable(results)
+            for result in results where result.needsRecovery {
+                let enhanced = Self.enhancedUI(AXUIElementCreateApplication(result.job.pid))
+                let server = dinky_window_info(result.job.id).frame
+                print("\(stamp()) frames: window \(result.job.id) pid \(result.job.pid) requested \(result.target), AX=\(String(describing: result.got)), server=\(server), retry=\(result.retried), EnhancedUI=\(enhanced)")
+            }
             // A window that could not be read back is not raised: each lookup of it would block the raise queue
             // for a second.
             let unreadable = results.unreadable
@@ -215,14 +237,25 @@ final class FrameApplier {
 
     // Size, position, size: the first size lets a window near the screen edge move, the second
     // fixes the size if the move clamped it. Stops at an invalid element, which takes no writes.
-    private func write(_ frame: CGRect, to element: AXUIElement) -> AXError {
+    private func write(_ job: FrameJob, to element: AXUIElement) -> AXError {
+        let frame = job.frame
         var size = frame.size, origin = frame.origin
         let sizeValue = AXValueCreate(.cgSize, &size)!, originValue = AXValueCreate(.cgPoint, &origin)!
+        var firstError = AXError.success
         for (attribute, value) in [(kAXSizeAttribute, sizeValue), (kAXPositionAttribute, originValue), (kAXSizeAttribute, sizeValue)] {
+            let start = ProcessInfo.processInfo.systemUptime
             let error = AXUIElementSetAttributeValue(element, attribute as CFString, value)
+            let elapsed = ProcessInfo.processInfo.systemUptime - start
+            if elapsed >= 0.05 || error != .success {
+                print("\(stamp()) frames: window \(job.id) pid \(job.pid) \(attribute) write-ms=\(Int(elapsed * 1000)) error=\(error.rawValue)")
+            }
             if error == .invalidUIElement { return error }
+            if error != .success {
+                print("\(stamp()) frames: AX write \(attribute) failed: \(error.rawValue)")
+                if firstError == .success { firstError = error }
+            }
         }
-        return .success
+        return firstError
     }
 
     private func move(_ origin: CGPoint, to element: AXUIElement) -> AXError {

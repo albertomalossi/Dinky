@@ -26,6 +26,14 @@ public struct FrameResult: Equatable, Sendable {
     /// True when the first write landed elsewhere and it was written once more.
     public var retried = false
 
+    /// A misplaced origin or a smaller-than-requested frame can be a transient failed write.
+    /// Larger frames at the requested origin remain eligible for minimum-size learning.
+    public var needsRecovery: Bool {
+        guard written, let got else { return false }
+        return abs(got.minX - target.minX) > 2 || abs(got.minY - target.minY) > 2
+            || got.width < target.width - 2 || got.height < target.height - 2
+    }
+
     /// Landed within 2 pt of the target on every edge.
     public var matched: Bool { got.map { $0.isClose(to: target, within: 2) } ?? false }
 }
@@ -45,6 +53,7 @@ public final class FrameScheduler: @unchecked Sendable {
 
     private let settle: TimeInterval
     private let prepare: (Int32) -> Void
+    private let beforeBatch: (Int32) -> Void
     private let read: (FrameJob) -> CGRect?
     private let write: (FrameJob) -> Void
     private let move: (FrameJob) -> Void
@@ -59,13 +68,16 @@ public final class FrameScheduler: @unchecked Sendable {
     private var generation = 0
 
     /// `prepare` runs once per process before its first write; `read`, `write` and `move` (position only)
-    /// run on that process's queue. `alive` says whether a process is still running.
+    /// run on that process's queue. `beforeBatch` runs before each nonempty batch, including animation
+    /// steps, to refresh app state that another utility may have changed. `alive` checks process lifetime.
     public init(settle: TimeInterval = 0.1, prepare: @escaping (Int32) -> Void = { _ in },
+                beforeBatch: @escaping (Int32) -> Void = { _ in },
                 alive: @escaping (Int32) -> Bool = { kill($0, 0) == 0 || errno == EPERM },
                 read: @escaping (FrameJob) -> CGRect?, write: @escaping (FrameJob) -> Void,
                 move: ((FrameJob) -> Void)? = nil) {
         self.settle = settle
         self.prepare = prepare
+        self.beforeBatch = beforeBatch
         self.alive = alive
         self.read = read
         self.write = write
@@ -97,6 +109,11 @@ public final class FrameScheduler: @unchecked Sendable {
             for (pid, jobs) in byPid {
                 let app = app(pid)
                 for job in jobs {
+                    app.revision += 1
+                    app.latest[job.id] = app.revision
+                    app.pendingRevisions[job.id] = app.revision
+                    // A final frame supersedes intermediate steps still waiting on this queue.
+                    app.steps.removeAll { $0.id == job.id }
                     if let i = app.pending.firstIndex(where: { $0.id == job.id }) { app.pending[i] = job } else { app.pending.append(job) }
                 }
                 app.batches.append(batch)
@@ -111,6 +128,9 @@ public final class FrameScheduler: @unchecked Sendable {
         lock.withLock {
             for job in jobs {
                 let app = app(job.pid)
+                app.revision += 1
+                app.latest[job.id] = app.revision
+                app.stepRevisions[job.id] = app.revision
                 if let i = app.steps.firstIndex(where: { $0.id == job.id }) { app.steps[i] = job } else { app.steps.append(job) }
                 schedule(app)
             }
@@ -138,6 +158,13 @@ public final class FrameScheduler: @unchecked Sendable {
         lock.withLock {
             minimums[id] = nil
             candidates[id] = nil
+            for app in apps.values {
+                app.latest[id] = nil
+                app.pendingRevisions[id] = nil
+                app.stepRevisions[id] = nil
+                app.pending.removeAll { $0.id == id }
+                app.steps.removeAll { $0.id == id }
+            }
             // What steps wrote is the queue's alone, so it is cleared there, after anything already queued.
             for app in apps.values { app.queue.async { app.written[id] = nil; app.stepSizes[id] = nil } }
         }
@@ -178,23 +205,29 @@ public final class FrameScheduler: @unchecked Sendable {
     public func cancel() {
         lock.withLock {
             generation += 1
-            for app in apps.values { app.pending = []; app.steps = [] }
+            for app in apps.values { app.pending = []; app.steps = []; app.latest = [:] }
         }
     }
 
     /// Take everything pending for one process and write it, steps first. Runs on the process's queue.
     private func drain(_ app: App) {
-        let (steps, jobs, batches, needsPrepare, generation) = lock.withLock {
+        let (steps, jobs, batches, needsPrepare, generation, stepRevisions, pendingRevisions) = lock.withLock {
             defer { app.steps = []; app.pending = []; app.batches = []; app.scheduled = false; app.prepared = true }
-            return (app.steps, app.pending, app.batches, !app.prepared || app.forgotten, self.generation)
+            return (app.steps, app.pending, app.batches, !app.prepared || app.forgotten, self.generation, app.stepRevisions, app.pendingRevisions)
         }
         if needsPrepare { prepare(app.pid) }
+        if lock.withLock({ self.generation == generation }), !steps.isEmpty || !jobs.isEmpty {
+            beforeBatch(app.pid)
+        }
         for job in steps {
+            guard lock.withLock({ self.generation == generation && app.latest[job.id] == stepRevisions[job.id] }) else { continue }
             app.written[job.id] == job.frame.size ? move(job) : write(job)
             app.written[job.id] = job.frame.size
             app.stepSizes[job.id, default: []].insert(job.frame.size)
         }
-        let results = run(jobs, stepSizes: app.stepSizes) { self.lock.withLock { self.generation } == generation }
+        let results = run(jobs, stepSizes: app.stepSizes) { job in
+            self.lock.withLock { self.generation == generation && app.latest[job.id] == pendingRevisions[job.id] }
+        }
         for result in results {
             if result.written { app.written[result.job.id] = nil }
             app.stepSizes[result.job.id] = nil
@@ -213,10 +246,10 @@ public final class FrameScheduler: @unchecked Sendable {
     /// Write, settle, read back; write the misses once more, settle, read back again. Writes only while `live`.
     /// A window already where its recorded minimum size lets it be is neither written nor retried. A window
     /// still at a size an animation step asked for is catching up, not refusing, so it shows no minimum.
-    private func run(_ jobs: [FrameJob], stepSizes: [WindowID: Set<CGSize>], live: () -> Bool) -> [FrameResult] {
+    private func run(_ jobs: [FrameJob], stepSizes: [WindowID: Set<CGSize>], live: (FrameJob) -> Bool) -> [FrameResult] {
         var results = jobs.map { job in
             let current = read(job), target = reachable(job)
-            let write = live() && !(current?.isClose(to: target, within: 1) ?? false)
+            let write = live(job) && !(current?.isClose(to: target, within: 1) ?? false)
             if write { self.write(job) }
             return FrameResult(job: job, target: target, got: current, written: write)
         }
@@ -227,14 +260,18 @@ public final class FrameScheduler: @unchecked Sendable {
 
         // Only windows that answered and landed elsewhere; an unreadable (possibly hung) one is not worth a second try.
         let misses = written.filter { i in results[i].got.map { !$0.isClose(to: results[i].target, within: 2) } ?? false }
-        guard !misses.isEmpty, live() else { return results }
+        guard !misses.isEmpty else { return results }
         for i in misses {
+            guard live(results[i].job) else { continue }
             write(results[i].job)
             results[i].retried = true
         }
+        let retried = misses.filter { results[$0].retried }
+        guard !retried.isEmpty else { return results }
         wait()
-        for i in misses {
+        for i in retried {
             results[i].got = read(results[i].job)
+            guard live(results[i].job) else { continue }
             recordMinimum(results[i], stepSizes: stepSizes[results[i].job.id] ?? [])
         }
         return results
@@ -299,6 +336,10 @@ public final class FrameScheduler: @unchecked Sendable {
         let pid: Int32
         let queue: DispatchQueue
         var pending: [FrameJob] = []
+        var revision = 0
+        var latest: [WindowID: Int] = [:]
+        var pendingRevisions: [WindowID: Int] = [:]
+        var stepRevisions: [WindowID: Int] = [:]
         var batches: [Batch] = []
         var steps: [FrameJob] = []
         /// The size each window's last step wrote, so the next step can be a plain move. Queue only.

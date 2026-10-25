@@ -15,6 +15,7 @@ final class Animator: NSObject {
 
     private let applier: FrameApplier
     private var entries: [WindowID: Entry] = [:]
+    private var targets = AnimationTargets()
     /// By tree, the rest of its latest pass, run once its windows have arrived.
     private var finishes: [UInt64: () -> Void] = [:]
     private var link: CADisplayLink?
@@ -58,10 +59,11 @@ final class Animator: NSObject {
                  pids: [WindowID: pid_t], then finish: @escaping () -> Void) {
         for (id, entry) in entries where entry.key == key && targets[id] == nil { entries[id] = nil }
         for (id, target) in targets {
+            let changed = self.targets.update(id, to: target)
             if entries[id] != nil {
                 entries[id]!.animation.retarget(target)
                 entries[id]!.key = key
-            } else if let start = starts[id], let pid = pids[id], !isResting(id, at: start, for: target) {
+            } else if changed, let start = starts[id], let pid = pids[id], !isResting(id, at: start, for: target) {
                 entries[id] = Entry(animation: FrameAnimation(from: start, to: target), pid: pid, key: key)
             }
         }
@@ -79,17 +81,22 @@ final class Animator: NSObject {
 
     /// Note where written windows came to rest.
     func noteLanded(_ results: [FrameResult]) {
-        for result in results { landed[result.job.id] = result.got.map { (result.job.frame, $0) } }
+        for result in results {
+            targets.update(result.job.id, to: result.job.frame)
+            landed[result.job.id] = result.needsRecovery ? nil : result.got.map { (result.job.frame, $0) }
+        }
     }
 
     /// Forgets a window that is gone, so a new window given its id starts fresh.
     func forget(_ id: WindowID) {
+        targets.forget(id)
         entries[id] = nil
         landed[id] = nil
     }
 
     /// Stops every animation where it is. Nothing is finished.
     func cancel() {
+        targets.reset()
         entries = [:]
         finishes = [:]
         link?.isPaused = true

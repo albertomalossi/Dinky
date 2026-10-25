@@ -18,7 +18,7 @@ final class Coordinator {
     let model = WindowModel()
     var enabled = true {
         didSet {
-            if !enabled { applier.cancel(); animator.cancel(); cancelDrag() }
+            if !enabled { recoveryPasses.removeAll(); applier.cancel(); animator.cancel(); cancelDrag() }
             if enabled != oldValue { updateBorders() }
             if enabled, !oldValue {
                 enabledSince = Date()
@@ -39,6 +39,8 @@ final class Coordinator {
     private(set) var workspaces: [UInt64: Workspace] = [:]
     var placements: [WindowID: Placement] = [:]
     var dirty: Set<UInt64> = []
+    /// Deferred recovery belongs to one layout pass; newer passes and disabling invalidate it.
+    private var recoveryPasses: [UInt64: UUID] = [:]
     /// Classification attempts for windows whose AX element has not appeared yet.
     var attempts: [WindowID: Int] = [:]
     /// Newly shown windows at the exact frame of a tile of their app, held out of the trees for a moment in case
@@ -416,7 +418,9 @@ final class Coordinator {
     /// Nothing is activated: the tree follows macOS's focus (`syncFocus`) and commands that choose a window
     /// focus it themselves, so a pass, which may have started before the latest focus change, must not.
     /// Minimum sizes found in a pass are laid out around all at once, when that moves anything.
-    private func apply(_ key: UInt64) {
+    private func apply(_ key: UInt64, recoveryAttempt: Int = 0) {
+        let recoveryPass = UUID()
+        recoveryPasses[key] = recoveryPass
         guard var workspace = workspaces[key] else { return }
         workspace.minimumSizes = minimumSizes(in: workspace)
         workspaces[key] = workspace
@@ -425,12 +429,32 @@ final class Coordinator {
         let layout = workspace.layout().excluding(dragging)
         let front = workspace.focused == dragging ? nil : workspace.focused
         let pids = Dictionary(uniqueKeysWithValues: layout.order.compactMap { id in model.windows[id].map { (id, $0.pid) } })
+        let identities = Dictionary(uniqueKeysWithValues: layout.order.compactMap { id in
+            model.windows[id].map { (id, $0.identity) }
+        })
         let write = { [weak self] in
-            guard let self else { return }
+            guard let self, self.enabled, self.isVisible(key), self.recoveryPasses[key] == recoveryPass else { return }
             applier.apply(layout, pids: pids, front: front) { [weak self] results in
                 DispatchQueue.main.async {
                     guard let self, self.enabled else { return }
+                    guard self.recoveryPasses[key] == recoveryPass else { return }
                     self.animator.noteLanded(results)
+                    let misses = results.filter(\.needsRecovery)
+                    if !misses.isEmpty, recoveryAttempt < 3 {
+                        let delay = [0.25, 0.5, 1.0][recoveryAttempt]
+                        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                            guard let self, self.enabled, self.recoveryPasses[key] == recoveryPass,
+                                  self.isVisible(key), self.dragging == nil, !CGEventSource.buttonState(.combinedSessionState, button: .left),
+                                  self.workspaces[key]?.layout().excluding(self.dragging) == layout,
+                                  misses.allSatisfy({ self.model.windows[$0.job.id]?.identity == identities[$0.job.id]
+                                      && self.model.windows[$0.job.id]?.isNormal == true
+                                      && self.model.windows[$0.job.id]?.isMinimized == false
+                                      && self.placements[$0.job.id]?.space == key
+                                      && self.placements[$0.job.id]?.floating == false }) else { return }
+                            self.snap.insert(key)
+                            self.apply(key, recoveryAttempt: recoveryAttempt + 1)
+                        }
+                    }
                     self.edit(key) { $0.minimumSizes = self.minimumSizes(in: $0) }
                     self.flush()
                 }
@@ -441,7 +465,12 @@ final class Coordinator {
         guard animates, !snapped else { return write() }
         // Stacking first, so the window coming to the front of an accordion slides in on top.
         applier.raiseIntoOrder(layout, pids: pids, front: front)
-        let starts = Dictionary(uniqueKeysWithValues: layout.order.compactMap { id in model.windows[id].map { (id, $0.frame) } })
+        let starts = Dictionary(uniqueKeysWithValues: layout.order.compactMap { id -> (WindowID, CGRect)? in
+            guard model.windows[id] != nil else { return nil }
+            // Animation events can reach the model late. Start genuine transitions at the live position.
+            let frame = dinky_window_info(id).frame
+            return frame.width > 0 && frame.height > 0 ? (id, frame) : nil
+        })
         animator.animate(key, from: starts, to: layout.frames, pids: pids, then: write)
     }
 
