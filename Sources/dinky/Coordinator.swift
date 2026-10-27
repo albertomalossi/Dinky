@@ -39,6 +39,9 @@ final class Coordinator {
     private(set) var workspaces: [UInt64: Workspace] = [:]
     var placements: [WindowID: Placement] = [:]
     var dirty: Set<UInt64> = []
+    /// Counts overlapping full writes so an older completion cannot expose a newer pass's events.
+    private var applying: [UInt64: Int] = [:]
+    private var frameRecovery: [WindowID: FrameRecovery] = [:]
     /// Classification attempts for windows whose AX element has not appeared yet.
     var attempts: [WindowID: Int] = [:]
     /// Newly shown windows at the exact frame of a tile of their app, held out of the trees for a moment in case
@@ -142,7 +145,10 @@ final class Coordinator {
         borders?.handle(event)
         if let window = event.window {
             event.change == .removed ? forget(window.id) : track(window)
-            if [.windowMove, .windowResize].contains(event.kind) { noteFrameChange(of: window.id) }
+            if [.windowMove, .windowResize].contains(event.kind) {
+                noteFrameChange(of: window.id)
+                recoverFrame(of: window.id)
+            }
         }
         if [.frontApp, .windowReorder, .windowCreate].contains(event.kind) { syncFocus() }
         if [.frontApp, .windowReorder].contains(event.kind) {
@@ -154,6 +160,19 @@ final class Coordinator {
             }
         }
         flush()
+    }
+
+    /// Apps can move themselves after the write and its retry have finished. Correct that event, not a timer.
+    private func recoverFrame(of id: WindowID) {
+        guard enabled, let placement = placements[id], !placement.floating, let key = placement.space,
+              isVisible(key), let tile = workspaces[key]?.layout().frames[id] else { return }
+        let eligible = dragging == nil && !CGEventSource.buttonState(.combinedSessionState, button: .left)
+            && !animator.isAnimating(id) && applying[key, default: 0] == 0
+        let resting = animator.isResting(id, at: dinky_window_info(id).frame, for: tile)
+        if frameRecovery[id, default: FrameRecovery()].shouldReapply(tile: tile, resting: resting, eligible: eligible) {
+            dirty.insert(key)
+            snap.insert(key)
+        }
     }
 
     /// Re-reads every window and display, moves windows to the trees of the Spaces they are on now
@@ -339,6 +358,7 @@ final class Coordinator {
         adopting.remove(id)
         applier.forget(id)
         animator.forget(id)
+        frameRecovery[id] = nil
         heldTabs[id] = nil
         notTabs.remove(id)
         guard let placement = placements.removeValue(forKey: id), let space = placement.space,
@@ -439,9 +459,18 @@ final class Coordinator {
         let pids = Dictionary(uniqueKeysWithValues: layout.order.compactMap { id in model.windows[id].map { (id, $0.pid) } })
         let write = { [weak self] in
             guard let self else { return }
+            applying[key, default: 0] += 1
             applier.apply(layout, pids: pids, front: front) { [weak self] results in
                 DispatchQueue.main.async {
-                    guard let self, self.enabled else { return }
+                    guard let self else { return }
+                    let remaining = self.applying[key, default: 0] - 1
+                    self.applying[key] = remaining > 0 ? remaining : nil
+                    guard self.enabled else { return }
+                    for result in results {
+                        if let got = result.got, self.animator.isResting(result.job.id, at: got, for: result.job.frame) {
+                            self.frameRecovery[result.job.id] = nil
+                        }
+                    }
                     self.animator.noteLanded(results)
                     self.edit(key) { $0.minimumSizes = self.minimumSizes(in: $0) }
                     self.flush()
