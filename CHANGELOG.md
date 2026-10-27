@@ -8,10 +8,9 @@
 
 ### Fixes
 
-- Tiles reach the screen's bottom and side edges when the Dock auto-hides. Before, after Mission Control macOS could keep reporting the shown Dock's strip for a minute or more, and tiles shrank to leave it free (#55).
-- A tiled window its app moves or resizes on its own after dinky placed it goes back to its tile at once. Before, it stayed where the app put it until the next focus or layout change (#47, diagnosis by @albertomalossi in #54).
-- A newer frame request stops an older request for the same window from writing or retrying. Before, an older pass could write its target again after a new one was queued (#54, thanks @albertomalossi).
-- Frame writes check for Enhanced UI being re-enabled by an app or utility before each batch, leaving it alone while VoiceOver or Switch Control is on. Before, it was disabled only once per process, so apps could start animating and fighting frame writes again (#54, thanks @albertomalossi).
+- Tiles reach the screen's bottom and side edges when the Dock auto-hides. Before, after Mission Control macOS could keep reporting the shown Dock's strip for a minute or more, and tiles shrank to leave it free (#55, thanks @Neubauer-Ralf).
+- A tiled window its app moves or resizes on its own after dinky placed it goes back to its tile at once. Before, it stayed where the app put it until the next focus or layout change (#47, diagnosed by @albertomalossi in #54).
+- An app or utility that turns Enhanced UI back on no longer makes windows animate and fight dinky's frame writes: dinky checks before every arrangement instead of once per app, and leaves the setting alone while VoiceOver or Switch Control is on. An older arrangement also no longer writes its frames after a newer one was queued (#54, thanks @albertomalossi).
 
 ## 0.22
 
