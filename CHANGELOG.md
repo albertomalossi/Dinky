@@ -9,6 +9,7 @@
 ### Fixes
 
 - Tiles reach the screen's bottom and side edges when the Dock auto-hides. Before, after Mission Control macOS could keep reporting the shown Dock's strip for a minute or more, and tiles shrank to leave it free (#55).
+- A newer frame request stops an older request for the same window from writing or retrying. Before, an older pass could write its target again after a new one was queued (#54, thanks @albertomalossi).
 
 ## 0.22
 
