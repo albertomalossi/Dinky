@@ -16,10 +16,9 @@ func visibleArea(of id: CGDirectDisplayID, frame: CGRect) -> CGRect {
     return CGRect(x: visible.minX, y: primary.frame.maxY - visible.maxY, width: visible.width, height: visible.height)
 }
 
-/// Whether the Dock is set to auto-hide, read fresh: the setting can change while dinky runs.
+/// Read on use because the Dock's auto-hide setting can change while dinky runs.
 func dockAutohides() -> Bool {
-    CFPreferencesAppSynchronize("com.apple.dock" as CFString)
-    return dockSetting("autohide") ?? false
+    dockSetting("autohide") ?? false
 }
 
 // What the layout needs from a display: its NSScreen and name, and the config's gaps resolved for it.

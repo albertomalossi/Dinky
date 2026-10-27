@@ -277,11 +277,9 @@ final class Coordinator {
         }
     }
 
-    /// The area a display's trees tile in: its visible area, or with `tile-over-hidden-dock` and the Dock set to
-    /// auto-hide, everything below the menu bar.
+    /// An auto-hidden Dock reserves no space, even when macOS reports its shown strip.
     private func area(of display: Display) -> CGRect {
-        tilingArea(frame: display.frame, visible: display.visibleArea,
-                   ignoringDock: config.tileOverHiddenDock && dockAutohides())
+        tilingArea(frame: display.frame, visible: display.visibleArea, dockAutohides: dockAutohides())
     }
 
     private func gaps(on display: Display) -> DinkyLayout.Gaps {
