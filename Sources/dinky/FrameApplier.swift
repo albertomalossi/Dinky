@@ -34,16 +34,24 @@ final class FrameApplier {
         try? FileManager.default.removeItem(at: Self.supportURL.appendingPathComponent("minimum-sizes.json"))
         appMinimums = Self.loadMinimums()
         scheduler = FrameScheduler(
-            prepare: { pid in
-                // Enhanced UI (set by VoiceOver and some utilities) makes apps animate and fight frame writes.
-                let app = AXUIElementCreateApplication(pid)
-                AXUIElementSetMessagingTimeout(app, Self.timeout)
-                AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanFalse)
-            },
+            beforeBatch: { pid in Self.suppressEnhancedUI(pid) },
             read: { [unowned self] job in withElement(pid: job.pid, id: job.id, frame) ?? nil },
             write: { [unowned self] job in withElement(pid: job.pid, id: job.id) { write(job.frame, to: $0) } },
             move: { [unowned self] job in withElement(pid: job.pid, id: job.id) { move(job.frame.origin, to: $0) } }
         )
+    }
+
+    /// Utilities and apps can re-enable Enhanced UI, making apps animate and fight frame writes.
+    /// Leave it alone when built-in assistive technology depends on it.
+    private static func suppressEnhancedUI(_ pid: pid_t) {
+        guard !NSWorkspace.shared.isVoiceOverEnabled, !NSWorkspace.shared.isSwitchControlEnabled else { return }
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, Self.timeout)
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(app, "AXEnhancedUserInterface" as CFString, &value) == .success,
+              (value as? NSNumber)?.boolValue == true else { return }
+        let error = AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanFalse)
+        print("\(stamp()) frames: pid \(pid) Enhanced UI re-enabled; disabling (error \(error.rawValue))")
     }
 
     /// Sizes windows refused to shrink below, from readback.

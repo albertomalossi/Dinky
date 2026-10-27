@@ -10,6 +10,7 @@
 
 - Tiles reach the screen's bottom and side edges when the Dock auto-hides. Before, after Mission Control macOS could keep reporting the shown Dock's strip for a minute or more, and tiles shrank to leave it free (#55).
 - A newer frame request stops an older request for the same window from writing or retrying. Before, an older pass could write its target again after a new one was queued (#54, thanks @albertomalossi).
+- Frame writes check for Enhanced UI being re-enabled by an app or utility before each batch, leaving it alone while VoiceOver or Switch Control is on. Before, it was disabled only once per process, so apps could start animating and fighting frame writes again (#54, thanks @albertomalossi).
 
 ## 0.22
 
