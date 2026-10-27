@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Configuration
+
+- New `lone-window-width` sets a lone window's centred width separately from `fullscreen-width`, at the top level, per display, or per workspace and its display tables. Leave it unset to keep using the resolved fullscreen width (#53).
+
 ### Fixes
 
 - Tiles reach the screen's bottom and side edges when the Dock auto-hides. Before, after Mission Control macOS could keep reporting the shown Dock's strip for a minute or more, and tiles shrank to leave it free (#55).

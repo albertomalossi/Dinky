@@ -176,6 +176,74 @@ struct ConfigTests {
                     line: 2, contains: "0.1 to 1")
     }
 
+    @Test func `Lone window width cascades independently`() throws {
+        #expect(try Config.parse("").loneWindowWidth == nil)
+        #expect(try Config.parse("").loneWindowWidth(forWorkspace: 1) == 1)
+        #expect(Config.default.loneWindowWidth == nil)
+        #expect(try Config.parse("lone-window-width = 1").loneWindowWidth == 1)
+        #expect(try Config.parse("lone-window-width = 0.1").loneWindowWidth == 0.1)
+        let config = try Config.parse("""
+        fullscreen-width = 1.0
+        lone-window-width = 0.75
+        [display.main]
+        lone-window-width = 0.6
+        [display.dell]
+        lone-window-width = 0.55
+        [display.'dell u']
+        gaps.inner = 2
+        [workspace.2]
+        lone-window-width = 0.7
+        [workspace.2.display.built-in]
+        lone-window-width = 0.9
+        [workspace.3]
+        fullscreen-width = 0.4
+        [workspace.3.display.dell]
+        lone-window-width = 0.8
+        [workspace.4]
+        lone-window-width = 0.65
+        [workspace.4.display.main]
+        fullscreen-width = 0.4
+        """)
+        let dell = Monitor(name: "DELL U3421WE", isMain: true, count: 2)
+        let laptop = Monitor(name: "Built-in Retina Display", isMain: false, count: 2)
+        #expect(config.loneWindowWidth(forWorkspace: 1) == 0.75)
+        #expect(config.loneWindowWidth(forWorkspace: 1, on: laptop) == 0.75)
+        #expect(config.loneWindowWidth(forWorkspace: nil, on: dell) == 0.55)
+        #expect(config.loneWindowWidth(forWorkspace: 2, on: dell) == 0.7)
+        #expect(config.loneWindowWidth(forWorkspace: 2, on: laptop) == 0.9)
+        #expect(config.loneWindowWidth(forWorkspace: 3, on: laptop) == 0.75, "exhaust the lone-window cascade before falling back")
+        #expect(config.loneWindowWidth(forWorkspace: 3, on: dell) == 0.8)
+        #expect(config.loneWindowWidth(forWorkspace: 4, on: dell) == 0.65, "an omitted display key inherits its workspace's width")
+        #expect(config.fullscreenWidth(forWorkspace: 1, on: dell) == 1)
+    }
+
+    @Test func `Lone window width falls back to resolved fullscreen width`() throws {
+        let config = try Config.parse("""
+        fullscreen-width = 0.8
+        [display.main]
+        fullscreen-width = 0.6
+        [workspace.2]
+        fullscreen-width = 0.7
+        [workspace.2.display.main]
+        fullscreen-width = 0.9
+        """)
+        let monitor = Monitor(name: "Built-in", isMain: true, count: 1)
+        #expect(config.loneWindowWidth(forWorkspace: 1) == 0.8)
+        #expect(config.loneWindowWidth(forWorkspace: nil, on: monitor) == 0.6)
+        #expect(config.loneWindowWidth(forWorkspace: 2) == 0.7)
+        #expect(config.loneWindowWidth(forWorkspace: 2, on: monitor) == 0.9)
+    }
+
+    @Test func `Lone window width validates every level`() {
+        for prefix in ["", "display.main.", "workspace.2.", "workspace.2.display.main."] {
+            let table = prefix.isEmpty ? "" : "[\(prefix.dropLast())]\n"
+            for value in ["0.0", "1.5"] {
+                assertError("\(table)lone-window-width = \(value)\n", path: "\(prefix)lone-window-width",
+                            line: prefix.isEmpty ? 1 : 2, contains: "0.1 to 1")
+            }
+        }
+    }
+
     @Test func `Unknown top-level key fails`() {
         assertError("workspaces = 3\ngap = 8\n", path: "gap", line: 2, contains: "unknown key")
         assertError("config-version = 1\n", path: "config-version", line: 1, contains: "unknown key")

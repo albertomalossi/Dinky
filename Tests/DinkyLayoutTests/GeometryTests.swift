@@ -164,7 +164,25 @@ struct FullscreenTests {
         #expect(ws.layout().frames == tiled)
     }
 
-    @Test func `A window alone takes the fullscreen width too`() {
+    @Test func `A lone window has its own centred width but fullscreen keeps its width`() {
+        for algorithm in [TilingAlgorithm.dwindle(.tiles), .scrolling, .master] {
+            var ws = workspace(1, bounds: rect(0, 0, 1010, 610), gaps: Gaps(all: 10), algorithm: algorithm)
+            ws.fullscreenWidth = 1
+            ws.loneWindowWidth = 0.75
+            #expect(ws.layout().frames[1] == rect(134, 10, 743, 590))
+            ws.toggleFullscreen()
+            #expect(ws.layout().frames[1] == rect(10, 10, 990, 590))
+            ws.fullscreenWidth = 0.5
+            #expect(ws.layout().frames[1] == rect(258, 10, 495, 590))
+            ws.toggleFullscreen()
+            #expect(ws.layout().frames[1] == rect(134, 10, 743, 590))
+        }
+        var grid = workspace(1, algorithm: .fixed(rows: 1, columns: 2, expand: .columns))
+        grid.loneWindowWidth = 0.75
+        #expect(grid.layout().frames[1] == rect(0, 0, 500, 600), "a reserved grid cell is not narrowed")
+    }
+
+    @Test func `An unset lone window width falls back to fullscreen width`() {
         var ws = workspace(1)
         ws.fullscreenWidth = 0.6
         #expect(ws.layout().frames[1] == rect(200, 0, 600, 600))

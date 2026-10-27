@@ -119,12 +119,15 @@ public struct DisplayOverride: Equatable {
     public var gaps = GapsPatch()
     /// `fullscreen-width` on these displays, nil for the top-level value.
     public var fullscreenWidth: Double?
+    /// A lone window's share on these displays, nil to continue the cascade.
+    public var loneWindowWidth: Double?
 
     init(_ pattern: String, _ t: Table) throws {
         guard !pattern.isEmpty else { throw ConfigError(path: t.path, "a display pattern can't be empty") }
         self.pattern = MonitorPattern(pattern)
         gaps = try t.table("gaps").map(GapsPatch.init) ?? gaps
-        fullscreenWidth = try t.fullscreenWidth()
+        fullscreenWidth = try t.windowWidth("fullscreen-width")
+        loneWindowWidth = try t.windowWidth("lone-window-width")
         if try t.int("workspaces") != nil {
             throw ConfigError(path: t.path("workspaces"),
                               "workspaces are numbered across displays now; put one on a display with [workspace-to-display]")

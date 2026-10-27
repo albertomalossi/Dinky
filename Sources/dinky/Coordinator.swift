@@ -273,6 +273,7 @@ final class Coordinator {
             workspaces[key]!.masterSize = config.master.size
             workspaces[key]!.setMasterSide(config.master.layoutSide)
             workspaces[key]!.fullscreenWidth = fullscreenWidth(for: key)
+            workspaces[key]!.loneWindowWidth = loneWindowWidth(for: key)
             workspaces[key]!.setAlgorithm(workspaces[key]!.chosenAlgorithm ?? settings(for: key).algorithm)
         }
     }
@@ -292,9 +293,14 @@ final class Coordinator {
                         on: displays.display(containingSpace: space).map(displays.monitor))
     }
 
-    /// The share of the width a fullscreen or lone window takes on the Space's workspace, resolved the same way.
+    /// The fullscreen share follows the Space's current workspace number and display.
     private func fullscreenWidth(for space: UInt64) -> Double {
         config.fullscreenWidth(forWorkspace: AppState.shared.numbers.number(of: space),
+                               on: displays.display(containingSpace: space).map(displays.monitor))
+    }
+
+    private func loneWindowWidth(for space: UInt64) -> Double {
+        config.loneWindowWidth(forWorkspace: AppState.shared.numbers.number(of: space),
                                on: displays.display(containingSpace: space).map(displays.monitor))
     }
 
@@ -384,6 +390,7 @@ final class Coordinator {
             workspaces[key]!.masterSize = config.master.size
             workspaces[key]!.setMasterSide(config.master.layoutSide)
             workspaces[key]!.fullscreenWidth = fullscreenWidth(for: key)
+            workspaces[key]!.loneWindowWidth = loneWindowWidth(for: key)
             workspaces[key]!.walls = walls(of: display)
         }
         return key

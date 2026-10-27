@@ -15,6 +15,7 @@ extension Config {
     follow-app-activation = true    # Cmd-Tab and Dock clicks switch Spaces the fast way
     float-windows-without-fullscreen = true   # progress windows, About, Calculator and the like float
     fullscreen-width = 1.0          # share of the width a fullscreen window, or a window alone, takes, centred
+    # lone-window-width = 0.75      # lone windows only; omitted uses the resolved fullscreen-width
 
     # Example: follow every app but one. Replaces the follow-app-activation line above.
     # [follow-app-activation]
@@ -58,6 +59,7 @@ extension Config {
     # gaps.outer.top = 44
     # [display.'DELL U3421WE']
     # fullscreen-width = 0.55       # on an ultrawide, a fullscreen or lone window takes half the width
+    # lone-window-width = 0.75      # lone windows only; omitted uses the resolved fullscreen-width
 
     [borders]
     enabled = true

@@ -33,9 +33,10 @@ public struct Workspace: Equatable, Sendable {
     var isFullscreen = false
     /// The window shown fullscreen over the tree, if any.
     public var fullscreen: WindowID? { isFullscreen ? focused : nil }
-    /// The share of the width inside the outer gaps a fullscreen window takes, centred; a window alone on the
-    /// workspace takes it too. 1 fills the width.
+    /// The share of the width inside the outer gaps a fullscreen window takes, centred. 1 fills the width.
     public var fullscreenWidth = 1.0
+    /// A lone window's share, or nil to keep using the fullscreen width.
+    public var loneWindowWidth: Double?
     /// Sizes windows refused to go below. Tiles grow to them when their siblings can give the space.
     public var minimumSizes: [WindowID: CGSize] = [:]
     /// Scrolling: the width of a new column, as a share of the width inside the outer gaps.
@@ -439,26 +440,26 @@ public struct Workspace: Equatable, Sendable {
     }
 
     /// Frames and stacking for every window. A fullscreen window covers the bounds minus outer gaps, narrowed to
-    /// `fullscreenWidth` and centred, and comes first; a window alone on the workspace is narrowed the same way.
+    /// `fullscreenWidth` and centred, and comes first; a lone window uses `loneWindowWidth` when set.
     /// Scrolled-out windows are parked where macOS lets them be, see `parked(_:)`.
     public func layout() -> Layout {
         var result = tiledLayout()
         if isScrolling { result.frames = result.frames.mapValues(parked) }
         let whole = gaps.inset(bounds)
         if let fullscreen {
-            result.frames[fullscreen] = narrowed(whole)
+            result.frames[fullscreen] = narrowed(whole, to: fullscreenWidth)
             result.order = [fullscreen] + result.order.filter { $0 != fullscreen }
         } else if result.frames.count == 1, let (id, frame) = result.frames.first, frame.isClose(to: whole, within: 1) {
             // Alone and filling the workspace; a fixed grid's lone window keeps its cell.
-            result.frames[id] = narrowed(frame)
+            result.frames[id] = narrowed(frame, to: loneWindowWidth ?? fullscreenWidth)
         }
         return result
     }
 
-    /// `frame` narrowed to `fullscreenWidth` of itself, centred.
-    private func narrowed(_ frame: CGRect) -> CGRect {
-        guard fullscreenWidth < 1 else { return frame }
-        let width = (frame.width * fullscreenWidth).rounded()
+    /// Keep the window centred within its original frame when narrowing it.
+    private func narrowed(_ frame: CGRect, to share: Double) -> CGRect {
+        guard share < 1 else { return frame }
+        let width = (frame.width * share).rounded()
         return CGRect(x: frame.minX + ((frame.width - width) / 2).rounded(), y: frame.minY, width: width, height: frame.height)
     }
 
